@@ -141,7 +141,7 @@ coco_val_dataset = dict(
         type="WeCocoDataset",
         data_root="data/coco/",
         test_mode=True,
-        ann_file="data/coco/annotations/instances_val2017.json",
+        ann_file="annotations/instances_val2017.json",
         data_prefix=dict(img="val2017"),
         batch_shapes_cfg=None,
     ),
