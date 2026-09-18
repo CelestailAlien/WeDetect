@@ -1,5 +1,85 @@
 # HumanRef: real Uni proposals -> Ref -> error attribution
 
+## Controlled A/B/C experiment (recommended)
+
+Sync all four files in `tools`: `humanref_pipeline.py`, `run_humanref_pipeline.sh`,
+`test_humanref_pipeline.py`, `HUMANREF_PIPELINE.md`. Run:
+
+```bash
+cd /media/data6/chengz/WeDetect
+conda activate wedetect_ref
+CUDA_VISIBLE_DEVICES=0 GPUS=1 LIMIT=16 ABC=1 OUT=results/humanref_abc_smoke \
+  bash tools/run_humanref_pipeline.sh
+CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 GPUS=8 ABC=1 OUT=results/humanref_abc_k100 \
+  bash tools/run_humanref_pipeline.sh
+```
+
+| Arm | Ref input | Offline postprocessing |
+|---|---|---|
+| A | Dataset candidate_boxes, first K | Ref score > 0.35 |
+| B | Actual Uni candidates, first K (Uni already performs NMS 0.7) | Ref score > 0.35 |
+| C | Exactly B's saved Ref inference | Ref score > 0.35, Ref-score NMS IoU 0.7 |
+
+A preserves old loader semantics: when multiple expressions name one image,
+the last annotation's candidate_boxes supply that image's candidates. Candidates
+are clipped to image bounds and truncated at the same K=100 cap in A and B.
+Neither path adds GT boxes. Both use the same prompt and checkpoint, BF16 model
+inputs and FP32 saved/output geometry. The old eval.py rounds output coordinates
+through BF16; compare fresh A vs B rather than claiming bitwise equivalence to
+historical logs. Actual candidate counts can differ even with the same cap.
+
+`ABC/comparison.md` and `ABC/comparison.json` contain the common summary.
+`ABC/A`, `ABC/B`, `ABC/C` contain each arm's predictions, official tables,
+`official_summary.json`, diagnostics and per-expression records.
+Raw Ref caches are `ref_A/` and `ref/`. B/C provenance hashes must be identical.
+Compare checks A/B annotation hash, IDs, checkpoint path and file hashes, prompt,
+attention implementation, script version, torch version, coordinate policy and K.
+Checkpoint hashing adds CPU/disk startup time; this is outside recorded inference.
+
+Existing version-1 B caches still support standalone `analyze`, including NMS:
+
+```bash
+python tools/humanref_pipeline.py analyze \
+  --annotations data/HumanRef/annotations.jsonl \
+  --ref-dir results/humanref_real_uni_k100/ref \
+  --output results/humanref_real_uni_k100/analysis_nms070 \
+  --score-threshold 0.35 --nms-iou 0.7
+```
+
+Strict A/B/C comparison requires fresh A/B caches with the new provenance fields.
+It refuses old caches rather than inferring missing checkpoint/source metadata.
+NMS uses descending Ref scores with original-index tie breaks, suppresses IoU
+strictly greater than the threshold, and does not read GT. Candidate/threshold
+selection is identical for B/C. This deterministic tie policy may differ from
+GPU torchvision NMS for exactly tied scores. NMS can remove distinct occluded
+instances; precision improvements cannot be assumed without checking recall.
+
+The 0.35 score threshold is a previously explored setting, not an established
+official paper setting. Candidate sources change the evaluation protocol; an
+A/B difference alone is not evidence of failed reproduction or a causal proof
+that duplicate predictions caused it. C tests one concrete postprocessing change.
+
+### One-to-one errors versus geometric coverage
+
+New fields use the official evaluator's GT-order greedy matching at diagnostic IoU:
+
+- `one_to_one_tp`: matched predictions.
+- `one_to_one_fp`: all unmatched predictions.
+- `nonoverlap_fp`: predictions overlapping no GT above the IoU cutoff.
+- `duplicate_or_assignment_fp`: unmatched predictions that do overlap a GT;
+  these include duplicate-object predictions and matching conflicts, not necessarily
+  literally identical coordinates or exclusively duplicates.
+- `one_to_one_fn`: unmatched GTs.
+- `nms_removed`: count removed by extra Ref NMS.
+
+The identity `one_to_one_fp = nonoverlap_fp + duplicate_or_assignment_fp` holds.
+The old `unmatched_selected_boxes` equals nonoverlap_fp, NOT all false positives.
+Geometric coverage statistics retain their old definitions, which are independent
+of one-to-one matching. `all_targets_recovered` does not mean an error-free set.
+Official P/R/DF1 are expression-macro metrics; aggregate TP/FP counts cannot be
+used to recreate those macro values by one global division. Report positive and
+rejection domains separately when inspecting FP totals.
+
 Run from the repository root, in the existing `wedetect_ref` environment.
 This is a new evaluation protocol alongside the official dataset-proposal protocol.
 It supports HumanRef only. It does not train any model or insert GT proposals.

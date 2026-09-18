@@ -10,12 +10,20 @@ GPUS=${GPUS:-8}
 K=${K:-100}
 LIMIT=${LIMIT:-0}
 THRESHOLD=${THRESHOLD:-0.35}
+ABC=${ABC:-0}
 if [ -e "$OUT" ]; then
     echo "Output exists: $OUT. Set OUT to a new directory." >&2
     exit 1
 fi
 mkdir -p "$OUT"
 python tools/test_humanref_pipeline.py
+if [ "$ABC" = 1 ]; then
+    torchrun --standalone --nnodes=1 --nproc-per-node="$GPUS" \
+        tools/humanref_pipeline.py ref --candidate-source dataset \
+        --annotations "$ANN" --images "$IMAGES" --checkpoint "$REF" \
+        --output "$OUT/ref_A" --num-proposals "$K" --limit "$LIMIT" \
+        2>&1 | tee "$OUT/ref_A.log"
+fi
 torchrun --standalone --nnodes=1 --nproc-per-node="$GPUS" \
     tools/humanref_pipeline.py uni --annotations "$ANN" --images "$IMAGES" \
     --checkpoint "$UNI" --output "$OUT/uni" --num-proposals "$K" --limit "$LIMIT" \
@@ -25,6 +33,13 @@ torchrun --standalone --nnodes=1 --nproc-per-node="$GPUS" \
     --checkpoint "$REF" --uni-dir "$OUT/uni" --output "$OUT/ref" \
     --num-proposals "$K" --limit "$LIMIT" \
     2>&1 | tee "$OUT/ref.log"
-python tools/humanref_pipeline.py analyze --annotations "$ANN" \
+if [ "$ABC" = 1 ]; then
+    python tools/humanref_pipeline.py compare --annotations "$ANN" \
+        --a-ref-dir "$OUT/ref_A" --ref-dir "$OUT/ref" --output "$OUT/ABC" \
+        --limit "$LIMIT" --score-threshold "$THRESHOLD" --nms-iou 0.7 \
+        2>&1 | tee "$OUT/analysis.log"
+else
+  python tools/humanref_pipeline.py analyze --annotations "$ANN" \
     --ref-dir "$OUT/ref" --output "$OUT/analysis" --limit "$LIMIT" \
     --score-threshold "$THRESHOLD" 2>&1 | tee "$OUT/analysis.log"
+fi

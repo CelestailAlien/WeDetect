@@ -83,11 +83,51 @@ def iou(a, b):
     return inter / union if union else 0.
 
 
-def diagnose(gt, boxes, scores, threshold, match_iou):
+def select_indices(boxes, scores, threshold, nms_iou=None):
+    validate_boxes(boxes)
+    assert len(boxes) == len(scores) and all(math.isfinite(s) and 0 <= s <= 1 for s in scores)
+    ids = [i for i, s in enumerate(scores) if s > threshold]
+    if nms_iou is None:
+        return ids
+    assert 0 < nms_iou <= 1
+    kept = []
+    # Deterministic ties: original candidate index. No GT used in postprocessing.
+    for i in sorted(ids, key=lambda i: (-scores[i], i)):
+        if not any(iou(boxes[i], boxes[j]) > nms_iou for j in kept):
+            kept.append(i)
+    return kept
+
+
+def matching_counts(gt, selected, match_iou):
+    # Same GT-order greedy one-to-one matching as official calculate_metrics.
+    used = set()
+    for g in gt:
+        best, best_iou = None, 0.
+        for j, b in enumerate(selected):
+            overlap = iou(g, b)
+            if j not in used and overlap >= match_iou and overlap > best_iou:
+                best, best_iou = j, overlap
+        if best is not None:
+            used.add(best)
+    nonoverlap = sum(not any(iou(g, b) >= match_iou for g in gt) for b in selected)
+    # Unassigned but GT-overlapping predictions: duplicate/assignment-conflict FP.
+    return len(used), nonoverlap, len(selected) - len(used) - nonoverlap
+
+
+def dataset_proposals(rows):
+    # Mirrors old GroundingDataset: last annotation for each image wins.
+    proposals = {}
+    for r in rows:
+        validate_boxes(r['candidate_boxes'])
+        proposals[r['image_name']] = dict(boxes=r['candidate_boxes'])
+    return proposals
+
+
+def diagnose(gt, boxes, scores, threshold, match_iou, nms_iou=None):
     validate_boxes(gt)
     validate_boxes(boxes)
     assert len(boxes) == len(scores) and all(math.isfinite(s) and 0 <= s <= 1 for s in scores)
-    selected = [b for b, s in zip(boxes, scores) if s > threshold]
+    selected = [boxes[i] for i in select_indices(boxes, scores, threshold, nms_iou)]
     covered = [any(iou(g, b) >= match_iou for b in boxes) for g in gt]
     recovered = [any(iou(g, b) >= match_iou for b in selected) for g in gt]
     n, c, h = len(gt), sum(covered), sum(recovered)
@@ -102,10 +142,15 @@ def diagnose(gt, boxes, scores, threshold, match_iou):
     else:
         category = 'all_targets_recovered'
     fp = sum(not any(iou(g, b) >= match_iou for g in gt) for b in selected)
+    tp, nonoverlap, redundant = matching_counts(gt, selected, match_iou)
     return dict(category=category, gt_count=n, covered_targets=c,
                 recovered_targets=h, proposal_missed_targets=n-c,
                 ref_missed_covered_targets=c-h, selected_count=len(selected),
                 unmatched_selected_boxes=fp,
+                one_to_one_tp=tp, one_to_one_fp=len(selected)-tp,
+                one_to_one_fn=n-tp, nonoverlap_fp=nonoverlap,
+                duplicate_or_assignment_fp=redundant,
+                nms_removed=sum(s > threshold for s in scores)-len(selected),
                 # Multi-target hits are geometric coverage, not one-to-one AP matching.
                 selected_boxes=selected)
 
@@ -130,7 +175,10 @@ def aggregate(rows):
                 all_targets_recovered_given_full_coverage=ratio(
                     sum(r['recovered_targets'] == r['gt_count'] for r in fully), len(fully)),
                 rejection_accuracy=ratio(sum(r['selected_count'] == 0 for r in neg), len(neg)),
-                unmatched_selected_boxes=sum(r['unmatched_selected_boxes'] for r in rows))
+                unmatched_selected_boxes=sum(r['unmatched_selected_boxes'] for r in rows),
+                **{k: sum(r[k] for r in rows) for k in (
+                    'one_to_one_tp', 'one_to_one_fp', 'one_to_one_fn',
+                    'nonoverlap_fp', 'duplicate_or_assignment_fp', 'nms_removed')})
 
 
 def run_uni(args, rows):
@@ -231,11 +279,11 @@ def analyze(args, rows, refs):
     for ann in rows:
         r = refs[ann['id']]
         assert r['image_name'] == ann['image_name']
-        d = diagnose(ann['answer_boxes'], r['boxes'], r['scores'], args.score_threshold, args.iou)
+        d = diagnose(ann['answer_boxes'], r['boxes'], r['scores'], args.score_threshold, args.iou, args.nms_iou)
         predictions.append(dict(id=ann['id'], extracted_predictions=d.pop('selected_boxes')))
         details.append(dict(id=ann['id'], image_name=ann['image_name'],
                             domain=ann['domain'], referring=ann['referring'], **d))
-    summary = dict(score_threshold=args.score_threshold, diagnostic_iou=args.iou,
+    summary = dict(score_threshold=args.score_threshold, diagnostic_iou=args.iou, nms_iou=args.nms_iou,
                    overall=aggregate(details), by_domain={domain: aggregate([
                        r for r in details if r['domain'] == domain]) for domain in sorted({r['domain'] for r in details})},
                    timing_note='Cached stages; includes cold calls, excludes model loading. Not online E2E FPS.',
@@ -250,18 +298,66 @@ def analyze(args, rows, refs):
         # Keep original candidate_boxes: official DensityF1 uses their count.
         metrics = evaluate_dataset(rows, predictions)
         print_comparative_metrics({'Uni-Ref': metrics}, rows, str(output / 'official'))
+        tuples = [t for values in metrics['domain'].values() for t in values]
+        summary['official'] = {name: sum(float(t[index]) for t in tuples)/len(tuples) if tuples else None
+                               for name, index in [('P50', 1), ('R50', 0), ('P5095', 3),
+                                                   ('R5095', 2), ('DF150', 7), ('DF15095', 8)]}
+        negatives = sum(r['domain'] == 'rejection' for r in rows)
+        summary['official']['Rejection'] = metrics['rejection_score']/negatives if negatives else None
+        save_json(output / 'official_summary.json', summary['official'])
     print(json.dumps(summary, indent=2, ensure_ascii=False))
+    return summary
+
+
+def check_comparable(a, b):
+    for key in ('annotation_sha256', 'ids', 'num_proposals', 'checkpoint',
+                'checkpoint_files_sha256', 'attention', 'coordinate_policy', 'prompt',
+                'script_sha256', 'torch_version'):
+        assert a[key] == b[key], f'A/B differ in {key}'
+    assert a['candidate_source'] == 'dataset' and b['candidate_source'] == 'uni', 'Incorrect A/B sources'
+
+
+def compare(args, rows):
+    import copy
+    a, am, ah = load_shards(args.a_ref_dir, 'ref')
+    b, bm, bh = load_shards(args.ref_dir, 'ref')
+    check_comparable(am, bm)
+    assert am['annotation_sha256'] == digest(args.annotations)
+    assert am['ids'] == [r['id'] for r in rows]
+    assert not Path(args.output).exists(), 'Choose a new comparison output directory'
+    reports = {}
+    for label, records, metadata, hashes, nms in (
+            ('A', a, am, ah, None), ('B', b, bm, bh, None), ('C', b, bm, bh, args.nms_iou or .7)):
+        settings = copy.copy(args)
+        settings.output = str(Path(args.output) / label)
+        settings.nms_iou = nms
+        reports[label] = analyze(settings, rows, records)
+        save_json(Path(settings.output) / 'provenance.json', dict(ref_meta=metadata, ref_shard_sha256=hashes))
+    save_json(Path(args.output) / 'comparison.json', reports)
+    metrics = ['P50', 'R50', 'DF150', 'P5095', 'R5095', 'DF15095', 'Rejection']
+    counts = ['target_coverage', 'proposal_missed_targets', 'ref_missed_covered_targets',
+              'one_to_one_tp', 'one_to_one_fp', 'nonoverlap_fp', 'duplicate_or_assignment_fp', 'nms_removed']
+    lines = ['| Metric | A dataset | B Uni | C Uni + Ref NMS |', '|---|---:|---:|---:|']
+    for key in metrics + counts:
+        section = 'official' if key in metrics else 'overall'
+        values = [reports[label].get(section, {}).get(key) for label in ('A', 'B', 'C')]
+        lines.append('| ' + key + ' | ' + ' | '.join('N/A' if v is None else f'{v:.6g}' for v in values) + ' |')
+    with (Path(args.output) / 'comparison.md').open('x', encoding='utf-8') as f:
+        f.write('\n'.join(lines) + '\n')
 
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument('stage', choices=['uni', 'ref', 'analyze'])
+    p.add_argument('stage', choices=['uni', 'ref', 'analyze', 'compare'])
     p.add_argument('--annotations', required=True)
     p.add_argument('--images')
     p.add_argument('--checkpoint')
     p.add_argument('--output', required=True)
     p.add_argument('--uni-dir')
     p.add_argument('--ref-dir')
+    p.add_argument('--a-ref-dir')
+    p.add_argument('--candidate-source', choices=['uni', 'dataset'], default='uni')
+    p.add_argument('--nms-iou', type=float, help='Extra Ref-score NMS; disabled for analyze by default, compare C defaults to 0.7')
     p.add_argument('--num-proposals', type=int, default=100)
     p.add_argument('--backbone', choices=['base', 'large'], default='base')
     p.add_argument('--attention', default='flash_attention_2', choices=['flash_attention_2', 'sdpa', 'eager'])
@@ -272,12 +368,21 @@ def main():
     args = p.parse_args()
     assert args.num_proposals > 0 and args.limit >= 0
     assert 0 <= args.score_threshold <= 1 and 0 < args.iou <= 1
+    assert args.nms_iou is None or 0 < args.nms_iou <= 1
     args.rank, args.world_size = int(os.getenv('RANK', '0')), int(os.getenv('WORLD_SIZE', '1'))
     rows = load_annotations(args.annotations, args.limit)
     meta = dict(annotation_sha256=digest(args.annotations), ids=[r['id'] for r in rows],
                 num_proposals=args.num_proposals)
     proposals = None
-    if args.stage == 'ref':
+    if args.stage == 'compare':
+        assert args.world_size == 1 and args.ref_dir and args.a_ref_dir
+        compare(args, rows)
+        return
+    if args.stage == 'ref' and args.candidate_source == 'dataset':
+        assert not args.uni_dir, 'Dataset source cannot also specify Uni cache'
+        # Full file, even when --limit is used, matches old last-per-image semantics.
+        proposals = dataset_proposals(load_annotations(args.annotations, 0))
+    if args.stage == 'ref' and args.candidate_source == 'uni':
         assert args.uni_dir
         proposals, source, hashes = load_shards(args.uni_dir, 'uni')
         assert source['annotation_sha256'] == meta['annotation_sha256'] and source['ids'] == meta['ids']
@@ -304,6 +409,15 @@ def main():
                 git_commit=subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip())
     if args.stage == 'uni':
         meta['checkpoint_sha256'] = digest(args.checkpoint)
+    else:
+        checkpoint_dir = Path(args.checkpoint)
+        assert checkpoint_dir.is_dir(), 'Use a local Ref checkpoint directory'
+        files = sorted(p for p in checkpoint_dir.iterdir() if p.is_file() and
+                       p.suffix in ('.safetensors', '.json', '.jinja', '.txt', '.model'))
+        assert any(p.suffix == '.safetensors' for p in files), 'Missing Ref weights'
+        meta.update(candidate_source=args.candidate_source, coordinate_policy='fp32_output_bf16_model_input',
+                    prompt='Please detect the "%s" in the image',
+                    checkpoint_files_sha256={p.name: digest(p) for p in files})
     records = run_uni(args, rows) if args.stage == 'uni' else run_ref(args, rows, proposals)
     save_json(target, dict(meta=meta, rank=args.rank, world_size=args.world_size, records=records))
     print(f'Saved {target}', flush=True)
