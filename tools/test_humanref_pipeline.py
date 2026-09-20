@@ -12,6 +12,12 @@ from humanref_pipeline import (aggregate, diagnose, digest, load_shards, save_js
 
 
 def main():
+    from humanref_sensitivity import experiment_plan
+    plan = experiment_plan()
+    assert len(plan) == len({(r['score'], r['nms']) for r in plan}) == 7
+    assert sum(r['axis'] == 'anchor' for r in plan) == 1
+    assert all(r['nms'] == .5 for r in plan if r['axis'] == 'score')
+    assert all(r['score'] == .35 for r in plan if r['axis'] == 'nms')
     a, b = [0, 0, 10, 10], [20, 20, 30, 30]
     assert select_indices([a, a, b], [.6, .9, .8], .35, .7) == [1, 2]
     assert select_indices([a, a], [.9, .9], .35, .7) == [0]

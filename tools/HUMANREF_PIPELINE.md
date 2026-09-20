@@ -1,5 +1,10 @@
 # HumanRef: real Uni proposals -> Ref -> error attribution
 
+For the author-setting audit, exploratory one-factor sensitivity run, and future
+development/test comparison rules, see [HUMANREF_RESEARCH_PROTOCOL.md](HUMANREF_RESEARCH_PROTOCOL.md).
+The offline sensitivity runner is `humanref_sensitivity.py`; it never selects a
+best setting or treats similarity to paper numbers as proof of author settings.
+
 ## Controlled A/B/C experiment (recommended)
 
 Sync all four files in `tools`: `humanref_pipeline.py`, `run_humanref_pipeline.sh`,
