@@ -1,5 +1,9 @@
 # P-linear：冻结 Ref，只训练各层共享线性读出头
 
+**audit_v1之后请优先使用 `REF_PLINEAR_UNI.md` 的运行命令。** 新版预检先冻结抽样、
+再检查所选图像候选；使用 `PL_SELECTION` 锁定已有5000/1000划分，smoke在划分内部截取。
+`PL_UNI_RUN` 用于校验新生成候选的完整产物和来源，不改变作者validation输入。
+
 本阶段回答：**第9/18/24/30层是否已包含可以被线性读出的指代表达信息？**
 不训练主干、不修改作者模型文件、不做 LoRA/MLP/路由器、不重新调 HumanRef 阈值。
 沿用已验证的 object-token 边界、原 final RMSNorm、固定候选与 prompt。
@@ -47,10 +51,11 @@ compact原头与full-shape原头可能有BF16 GEMM舍入差异，逐条存储差
    上述仅展示格式，不是真实样本。query从 `conversations[1].value` 读取；
    框须为像素坐标xyxy，单GT。原始REFER pickle、COCO xywh、stage3 `class_name` 格式不能直接传入。
 2. 训练图像候选JSON，以相同image字符串为键，值为xyxy框列表或 `[boxes, objectness]`。
-   至少覆盖输入训练标注涉及的所有图像。采用文件中前100框及其顺序，不乘objectness。
+   至少覆盖预先选定train/dev表达涉及的所有图像；不要求未选中的训练图也有候选。
+   采用文件中前100框及其顺序，不乘objectness。
    `refcoco_proposals_all.json` 的 `all` **不能证明它覆盖train**，脚本会真实检查缺失键。
    若缺少训练候选，需要单独准备：固定Uni checkpoint/输入/NMS/top-K提取；不得由GT生成或补入。
-   本轮代码不包含未验证的新训练集下载器、REFER转换器或Uni候选生成器。
+   UMD转换与固定Uni提取分别见 `REF_PLINEAR_PREPARE.md` 和 `REF_PLINEAR_UNI.md`。
 3. 训练/验证图像，以及已有作者验证标注、验证候选、Ref checkpoint。
 4. 已通过的 `results/ref_full_d30_refcocog_validation/{manifest,summary}.json`，用于冻结来源。
 
@@ -69,6 +74,7 @@ compact原头与full-shape原头可能有BF16 GEMM舍入差异，逐条存储差
 同步新增七个文件至服务器 `tools/`：
 
 - `ref_plinear.py`、`ref_plinear_core.py`、`ref_plinear_data.py`
+- `ref_plinear_inputs.py`（新版预检新增依赖）
 - `ref_plinear_train.py`、`ref_plinear_eval.py`
 - `test_ref_plinear.py`、`REF_PLINEAR.md`
 

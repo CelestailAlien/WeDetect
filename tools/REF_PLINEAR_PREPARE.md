@@ -1,5 +1,9 @@
 # P-linear 前置：RefCOCOg UMD 标注转换与服务器输入核查
 
+**已完成audit_v1并发现训练候选不足后，转到 `REF_PLINEAR_UNI.md`。**
+旧audit仍按全训练源报告NEEDS_INPUTS，保留用于诊断；新版P-linear只要求冻结抽样涉及的候选，
+不再需要将旧audit刷成全训练源READY。下文描述旧audit的原有行为。
+
 本步骤不训练、不使用GPU、不改旧评测文件，也不生成候选框。
 新增 `ref_plinear_prepare.py`、`test_ref_plinear_prepare.py` 和本说明。
 依赖此前的 P-linear/E0 公共工具，只有 Python 标准库；无需安装新库。

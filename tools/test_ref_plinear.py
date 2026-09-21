@@ -124,14 +124,22 @@ def test_preflight():
         save_json(ann, annotations)
         save_json(val, validation)
         save_json(props, proposals)
+        # Only SELECTED training images have proposals. Unselected images must
+        # not block preflight, and availability must not alter the split.
+        from ref_plinear_inputs import load_rec_rows, select_rows
+        chosen = select_rows(load_rec_rows(ann), load_rec_rows(val), 6, 3, pipeline.SPLIT_SEED)
+        names = {r['image_name'] for rows in chosen.values() for r in rows}
+        partial = root / 'selected_proposals.json'
+        save_json(partial, {n: proposals[n] for n in names})
         ref = root / 'reference'
         save_json(ref / 'summary.json', dict(status='PASSED'))
         save_json(ref / 'manifest.json', dict(full_split=True, num_layers=36,
             annotation_sha256=digest(val), proposals_sha256=digest(props),
             sample_ids=[r['id'] for r in validation], image_sha256=hashes))
         with patch.multiple(pipeline, OUTPUT=root / 'run', REFERENCE=ref, VAL_ANN=val,
-                            VAL_PROPOSALS=props, IMAGES=root, TRAIN_N=6, DEV_N=3, VAL_N=0):
-            with patch.dict('os.environ', {'PL_TRAIN_ANN': str(ann), 'PL_TRAIN_PROPOSALS': str(props)}):
+                            VAL_PROPOSALS=props, IMAGES=root, TRAIN_N=6, DEV_N=3, VAL_N=0,
+                            SELECTION=None, UNI_RUN=None):
+            with patch.dict('os.environ', {'PL_TRAIN_ANN': str(ann), 'PL_TRAIN_PROPOSALS': str(partial)}):
                 pipeline.preflight()
                 plan = pipeline.read_json(root / 'run/plan.json')
                 assert plan['counts'] == dict(train=6, dev=3, validation=2)

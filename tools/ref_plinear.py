@@ -14,6 +14,7 @@ from ref_e0 import (ATTENTION, EXPECTED_TRANSFORMERS, MAX_PROPOSALS, prepare_inp
                     COMPACT_ATOL, COMPACT_RTOL)
 from ref_e0_data import canonical_hash, load_rec_annotations
 from ref_plinear_data import image_key, read_json, split_train_dev
+from ref_plinear_inputs import load_rec_rows, select_rows, load_selected_candidates, verify_uni_artifact
 
 DEPTHS = [9, 18, 24, 30, 36]
 SPLIT_SEED = 20260921
@@ -26,10 +27,12 @@ IMAGES = Path(os.environ.get('PL_IMAGES', ROOT / 'data/coco2014'))
 REFERENCE = Path(os.environ.get('PL_REFERENCE', ROOT / 'results/ref_full_d30_refcocog_validation'))
 VAL_ANN = Path(os.environ.get('PL_VAL_ANN', ROOT / 'wedetect_ref/eval_grounding/eval_refcoco/refcocog_validation.json'))
 VAL_PROPOSALS = Path(os.environ.get('PL_VAL_PROPOSALS', ROOT / 'wedetect_ref/eval_grounding/eval_refcoco/refcoco_proposals_all.json'))
+SELECTION = Path(os.environ['PL_SELECTION']) if os.environ.get('PL_SELECTION') else None
+UNI_RUN = Path(os.environ['PL_UNI_RUN']) if os.environ.get('PL_UNI_RUN') else None
 
 
 def source_hashes():
-    paths = [Path(__file__), ROOT / 'tools/ref_plinear_core.py', ROOT / 'tools/ref_plinear_data.py',
+    paths = [Path(__file__), ROOT / 'tools/ref_plinear_core.py', ROOT / 'tools/ref_plinear_data.py', ROOT / 'tools/ref_plinear_inputs.py',
              ROOT / 'tools/ref_e0.py', ROOT / 'tools/ref_e0_core.py', ROOT / 'tools/ref_e0_data.py',
              ROOT / 'tools/ref_pnative_core.py', ROOT / 'tools/humanref_pipeline.py',
              ROOT / 'wedetect_ref/models/qwen3vl_referring.py', ROOT / 'wedetect_ref/models/vision_process.py']
@@ -46,11 +49,16 @@ def preflight():
     assert ref['full_split'] and ref['num_layers'] == 36
     assert digest(VAL_ANN) == ref['annotation_sha256']
     assert digest(VAL_PROPOSALS) == ref['proposals_sha256']
-    train, train_boxes = load_rec_annotations(train_ann, train_props)
+    train = load_rec_rows(train_ann)
     validation, val_boxes = load_rec_annotations(VAL_ANN, VAL_PROPOSALS)
     assert all(r['id'].startswith('refcocog_train_') for r in train), 'Use RefCOCOg train, not mixed REC data'
     assert [r['id'] for r in validation] == ref['sample_ids']
-    selected = split_train_dev(train, validation, TRAIN_N, DEV_N, SPLIT_SEED)
+    # Candidate availability must not influence the frozen expression/image split.
+    plain_val = [{key: r[key] for key in ('id', 'image_name', 'referring', 'answer_boxes')} for r in validation]
+    selected = select_rows(train, plain_val, TRAIN_N, DEV_N, SPLIT_SEED, SELECTION)
+    names = {r['image_name'] for rows in selected.values() for r in rows}
+    train_boxes = load_selected_candidates(train_props, names)
+    uni_provenance = None if UNI_RUN is None else verify_uni_artifact(UNI_RUN, train_props, selected, train_ann, SELECTION)
     assert 0 <= VAL_N <= len(validation)
     selected['validation'] = validation if VAL_N == 0 else validation[:VAL_N]
     hashes, paths = {}, {}
@@ -79,12 +87,13 @@ def preflight():
         counts={s: len(rs) for s, rs in selected.items()}, rows=records,
         smoke_only=(TRAIN_N != 5000 or DEV_N != 1000 or VAL_N != 0),
         train_annotation_sha256=digest(train_ann), train_proposals_sha256=digest(train_props),
+        selection_sha256=digest(SELECTION) if SELECTION is not None else None, uni_provenance=uni_provenance,
         validation_annotation_sha256=digest(VAL_ANN), validation_proposals_sha256=digest(VAL_PROPOSALS),
         source_paths=dict(train_annotations=str(train_ann.resolve()), train_proposals=str(train_props.resolve()),
                           validation_annotations=str(VAL_ANN.resolve()), validation_proposals=str(VAL_PROPOSALS.resolve())),
         reference_manifest_sha256=digest(REFERENCE / 'manifest.json'),
         reference_summary_sha256=digest(REFERENCE / 'summary.json'),
-        sources=source_hashes(), selection='seeded image groups; dev first, train second; no GT-based sampling',
+        sources=source_hashes(), selection='seeded image groups; optional verified audit lock, smoke prefixes within frozen splits; no GT-based sampling',
         protocol='first 100 fixed proposals; clipped; no GT insertion/shuffle/NMS/score cutoff; IoU>=0.5',
         ranking='FP32 raw logits for all FP32 heads; original BF16 raw/sigmoid retained separately')
     save_json(OUTPUT / 'plan.json', plan)
