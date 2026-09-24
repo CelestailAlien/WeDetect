@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RefCOCOg · 人工复核图册</title>
+<style>
+:root{font-family:system-ui,"Microsoft YaHei",sans-serif;color:#182b3d;background:#eef2f5;font-size:15px}*{box-sizing:border-box}body{margin:0}header{padding:20px 28px;background:#122f43;color:#fff}h1{font-size:23px;margin:0 0 7px}header p{margin:0;color:#bed1dd;font-size:13px}main{max-width:1580px;margin:auto;padding:20px}button,select,input,textarea{font:inherit;border:1px solid #b8c9d5;border-radius:6px;padding:8px;background:white;color:#182b3d}button{cursor:pointer}button:hover{background:#e7f2f6}button:disabled{opacity:.4;cursor:default}.primary{background:#146674;color:white;border-color:#146674}.primary:hover{background:#0d505b}nav,.toolbar,.actions{display:flex;gap:9px;align-items:center;flex-wrap:wrap}.toolbar{margin:14px 0}#search{min-width:190px;flex:1}.card{background:white;border:1px solid #d9e2e9;border-radius:10px;padding:16px;margin:14px 0}.query{font-size:22px;line-height:1.5;margin:10px 0}.meta{font-size:13px;color:#546d80;line-height:1.7}.pill{display:inline-block;padding:3px 9px;border-radius:20px;background:#e8f0f5;font-size:13px}.panels{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:16px}.panel h3{font-size:15px;margin:0 0 10px}.viewport{height:420px;overflow:auto;background:#14212c;border-radius:7px;display:flex;align-items:flex-start;justify-content:flex-start}.viewport img,.viewport svg{display:block;width:100%;height:auto;flex-shrink:0}#plain{object-fit:contain;height:100%}.controls{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin:12px 0}input[type=checkbox]{accent-color:#146674}table{width:100%;border-collapse:collapse;font-size:13px}th,td{text-align:left;padding:8px 10px;border-bottom:1px solid #e5ebef}th{color:#546d80;font-weight:500}.form{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.form label{display:flex;flex-direction:column;gap:5px}textarea{width:100%;resize:vertical;min-height:90px}.notice{padding:10px 14px;border-left:3px solid #bd8b35;background:#fff6e5;font-size:13px;line-height:1.6}#warning{background:#fee9e7;color:#941d17;padding:12px;display:none;white-space:pre-wrap}.actions{margin-top:12px}.grow{flex:1}.muted{color:#657889;font-size:13px}#empty{padding:35px;text-align:center}.small{font-size:12px}.done{color:#16754a;font-weight:600}a{color:#126371}details{font-size:13px;line-height:1.7}footer{padding:15px 0;font-size:12px;color:#617586}#blind{min-height:100px;display:flex;align-items:center;justify-content:center;background:#f4f7f9;border:1px dashed #c2d0db;border-radius:8px}#revealed[hidden],#blind[hidden],#content[hidden],#empty[hidden]{display:none}.legend{font-size:12px}.legend span{margin-right:12px;font-weight:600}@media(max-width:900px){main{padding:12px}.panels{grid-template-columns:1fr}.viewport{height:360px}.form{grid-template-columns:1fr}header{padding:18px}.query{font-size:19px}}
+</style></head><body>
+<header><h1>RefCOCOg · 人工复核图册</h1><p id="subtitle"></p></header>
+<main><div id="warning" role="alert"></div>
+<nav><label>复核模型 <select id="arm" aria-label="复核模型"></select></label>
+<select id="group" aria-label="正确性分组"><option value="all">全部正确性分组</option><option value="deep_only">仅深层正确</option><option value="both_wrong">浅深共同错误</option><option value="shallow_only">仅浅层正确</option><option value="both_correct">浅深都正确</option></select>
+<select id="statusFilter" aria-label="复核进度"><option value="all">全部进度</option><option value="todo">尚未完成</option><option value="done">已完成</option></select>
+<input id="search" aria-label="搜索" placeholder="搜索表达、样本 ID、图像编号"></nav>
+<div class="toolbar"><button id="prev">← 上一条</button><button id="next">下一条 →</button><span class="pill" id="position"></span><span class="grow"></span><span id="progress" class="muted"></span></div>
+<div id="empty" hidden>当前筛选下没有样本。可切换分组、进度或清空搜索。</div>
+<section id="content"><article class="card"><div class="meta" id="identity"></div><div class="query" id="query"></div>
+<p class="notice">先只看原图和表达，判断目标是否清楚；再显示模型框。低 IoU 不自动等于语义选错，IoU 接近 0.5 也不自动等于同一对象。</p>
+<div class="panels"><section class="panel"><h3>① 原图 · 不显示答案</h3><div class="viewport"><img id="plain" alt="待复核原图"></div><a id="original" target="_blank" rel="noopener">在新窗口查看原图</a></section>
+<section class="panel"><h3>② GT 与候选对照</h3><div id="blind"><button id="reveal" class="primary">显示预测与GT</button></div>
+<div id="revealed" hidden><div class="controls"><label><input type="checkbox" id="showGT" checked> GT</label><label><input type="checkbox" id="showTop" checked> 浅层Top-3</label><label><input type="checkbox" id="showDeep" checked> 深层Top-1</label><label>缩放 <select id="zoom"><option value="1">100%</option><option value="1.5">150%</option><option value="2">200%</option><option value="3">300%</option></select></label></div>
+<div class="viewport"><svg id="overlay" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="GT、浅层前三名与深层第一名叠加框"></svg></div>
+<div class="legend"><span style="color:#1cbe72">GT 绿</span><span style="color:#ed4958">Top1 红</span><span style="color:#ec971f">Top2 橙</span><span style="color:#3899ff">Top3 蓝</span><span style="color:#b177ff">深层 紫</span></div>
+<table><thead><tr><th>候选</th><th>原索引</th><th>原始分数</th><th>IoU</th></tr></thead><tbody id="candidates"></tbody></table><p id="ranks" class="meta"></p></div></section></div></article>
+<article class="card"><h3>③ 人工判断：当前浅层 Top-1</h3><div class="form" id="fields"></div><p class="muted">同一对象但框范围不同，可标“同对象框质量问题”；表达不唯一或 GT 可疑，单独记录歧义。不要直接修改原标注。每个模型分别保存。</p>
+<label for="notes">具体依据 / 不确定原因</label><textarea id="notes" placeholder="例如：第一名是左侧人物，第三名才是与自行车相邻的人；或同一人物只框住上半身。"></textarea>
+<div class="actions"><button id="mark" class="primary">标记本条已复核</button><button id="unmark">改为待复核</button><span id="saved" class="muted"></span><span class="grow"></span><button id="exportJSON">导出标注 JSON</button><button id="exportCSV">导出标注 CSV</button><button id="importButton">导入标注 JSON</button><input id="importFile" type="file" accept=".json,application/json" hidden></div>
+<details><summary>复核规则与数据边界</summary><p>这些是按错误类型富集的诊断样例，不能用其比例代表全体数据。人工标签只用于诊断；不要把 validation 复核样例加入训练。合格框按 IoU≥0.5 定义。三个候选都不合格时，Top-3 重排无法修复。</p><p>浏览器存储仅供方便，请定期导出 JSON 到本地。页面不能直接改写实验目录里的原 review.csv；浏览器限制或清除站点数据可能丢失未导出的标注。</p></details></article></section>
+<footer>离线运行，无远程脚本或图片请求。原图已按实验记录逐张 SHA-256 校验。坐标是原图像素 xyxy，候选索引从 0 开始。</footer></main>
+<script id="review-data" type="application/json">__REVIEW_DATA__</script>
+<script>
+'use strict';
+const DATA=JSON.parse(document.getElementById('review-data').textContent);
+const $=id=>document.getElementById(id), NS='http://www.w3.org/2000/svg';
+const GROUPS={both_correct:'浅深都正确',deep_only:'仅深层正确',shallow_only:'仅浅层正确',both_wrong:'浅深共同错误'};
+const FIELDS={semantic_object_error:'选错语义对象？',same_object_localization:'同对象框质量 / 范围问题？',expression_or_annotation_ambiguity:'表达或标注存在歧义？',uncertain:'当前无法确定？'};
+const ARMS=Object.keys(DATA.rows[0].groups), KEY='ref-review-'+DATA.review_id;
+let labels={},position=0,filtered=[],revealed=false;
+function warn(message){$('warning').textContent=message;$('warning').style.display='block';}
+function shortArm(a){const m=a.match(/seed(\d+)/);return m?'第24层线性头 · seed'+m[1]:'第30层原头';}
+function key(r,a=$('arm').value){return r.id+'|'+a;}
+function blank(){return {...Object.fromEntries(Object.keys(FIELDS).map(k=>[k,''])),notes:'',done:false};}
+function checkedLabels(input){
+ if(!input||typeof input!=='object'||Array.isArray(input))throw Error('标注结构不是对象');
+ const allowed=new Set(DATA.rows.flatMap(r=>ARMS.map(a=>key(r,a)))),clean={};
+ for(const [k,v]of Object.entries(input)){
+  if(!allowed.has(k)||!v||typeof v!=='object')throw Error('标注含未知样本/模型');
+  if(typeof v.notes!=='string'||typeof v.done!=='boolean')throw Error('标注字段不完整');
+  const row=blank();for(const f of Object.keys(FIELDS)){if(!['','yes','no','unsure'].includes(v[f]))throw Error('标注值无效');row[f]=v[f];}
+  if(row.semantic_object_error==='yes'&&row.same_object_localization==='yes')throw Error('同一 Top-1 不能同时标为不同对象和同对象');
+  row.notes=v.notes;row.done=v.done;clean[k]=row;
+ }return clean;
+}
+try{const stored=localStorage.getItem(KEY);if(stored)labels=checkedLabels(JSON.parse(stored));}catch(e){warn('无法恢复浏览器标注缓存：'+e.message+'。请导入已导出的 JSON，勿依赖浏览器保存。');}
+for(const a of ARMS){const o=document.createElement('option');o.value=a;o.textContent=shortArm(a);$('arm').append(o);}
+for(const [f,text]of Object.entries(FIELDS)){const label=document.createElement('label');label.textContent=text;const s=document.createElement('select');s.id=f;for(const [v,t]of [['','未判断'],['yes','是'],['no','否'],['unsure','不确定']]){const o=document.createElement('option');o.value=v;o.textContent=t;s.append(o);}label.append(s);$('fields').append(label);s.addEventListener('change',()=>save(false));}
+$('subtitle').textContent=DATA.rows.length+' 条表达 / '+new Set(DATA.rows.map(r=>r.image_file)).size+' 张原图 · 冻结 Top-k 诊断 · 标注只保存在本地';
+function current(){return filtered[position];}
+function persist(){try{localStorage.setItem(KEY,JSON.stringify(labels));$('saved').textContent='已暂存浏览器，请定期导出 JSON';}catch(e){warn('浏览器存储失败：'+e.message+'。当前内容仍在内存，请立即导出 JSON。');}}
+function save(done){const r=current();if(!r)return;const v=blank();for(const f of Object.keys(FIELDS))v[f]=$(f).value;v.notes=$('notes').value;v.done=done?true:(labels[key(r)]?.done||false);
+ if(v.semantic_object_error==='yes'&&v.same_object_localization==='yes'){warn('当前 Top-1 不能同时是“不同对象”与“同一对象框问题”。请修正；这次修改尚未保存。');return;}
+ if(done&&!Object.keys(FIELDS).some(f=>v[f])&&!v.notes.trim()){warn('请先填写至少一项判断或依据，再标为已复核。');return;}
+ labels[key(r)]=v;persist();progress();}
+function progress(){const a=$('arm').value,n=DATA.rows.filter(r=>labels[key(r,a)]?.done).length;$('progress').textContent='当前模型已完成 '+n+' / '+DATA.rows.length;$('mark').textContent=current()&&labels[key(current())]?.done?'✓ 本条已复核':'标记本条已复核';}
+function applyFilter(){const q=$('search').value.toLowerCase(),g=$('group').value,status=$('statusFilter').value;
+ filtered=DATA.rows.filter(r=>(g==='all'||r.groups[$('arm').value]===g)&&(!q||(r.id+' '+r.query+' '+r.image_name).toLowerCase().includes(q))&&(status==='all'||(Boolean(labels[key(r)]?.done)===(status==='done'))));position=0;render();}
+function svgNode(name,attrs){const e=document.createElementNS(NS,name);for(const [k,v]of Object.entries(attrs))e.setAttribute(k,v);return e;}
+function draw(){const r=current();if(!r)return;const svg=$('overlay');svg.replaceChildren();svg.setAttribute('viewBox','0 0 '+r.width+' '+r.height);svg.style.width=(Number($('zoom').value)*100)+'%';svg.append(svgNode('image',{href:r.image_file,width:r.width,height:r.height}));
+ function rect(box,name,color,dash=false){const [x,y,x2,y2]=box;const b=svgNode('rect',{x,y,width:x2-x,height:y2-y,fill:'none',stroke:color,'stroke-width':3,'vector-effect':'non-scaling-stroke'});if(dash)b.setAttribute('stroke-dasharray','7 4');svg.append(b);const text=svgNode('text',{x:Math.min(x+3,r.width-45),y:Math.min(Math.max(y+17,18),r.height-3),fill:color,'font-size':15,'font-weight':700,stroke:'#101c28','stroke-width':3,'paint-order':'stroke'});text.textContent=name;svg.append(text);}
+ if($('showGT').checked)for(const b of r.gt)rect(b,'GT','#1cbe72');
+ if($('showDeep').checked)rect(r.arms[DATA.deep].top[0].box,'D36','#b177ff',true);
+ if($('showTop').checked)r.arms[$('arm').value].top.forEach((v,i)=>rect(v.box,'T'+(i+1),['#ed4958','#ec971f','#3899ff'][i]));
+}
+function render(){const r=current();$('content').hidden=!r;$('empty').hidden=!!r;$('position').textContent=r?(position+1)+' / '+filtered.length:'0 / 0';$('prev').disabled=!r||position===0;$('next').disabled=!r||position===filtered.length-1;progress();if(!r)return;
+ revealed=false;$('revealed').hidden=true;$('blind').hidden=false;$('query').textContent=r.query;$('identity').textContent=r.id+' · '+r.image_name+' · '+GROUPS[r.groups[$('arm').value]];
+ $('plain').src=r.image_file;$('original').href=r.image_file;$('plain').onerror=()=>warn('图片无法加载：'+r.image_file+'。请保留 index.html 与 images 文件夹的相对位置。');
+ const v=labels[key(r)]||blank();for(const f of Object.keys(FIELDS))$(f).value=v[f];$('notes').value=v.notes;$('saved').textContent='';$('zoom').value='1';
+ const table=$('candidates');table.replaceChildren();const a=r.arms[$('arm').value];
+ for(const [name,c]of [...a.top.map((c,i)=>['浅层 Top-'+(i+1),c]),['深层 Top-1',r.arms[DATA.deep].top[0]]]){const tr=document.createElement('tr');for(const text of [name,c.index,c.score.toFixed(5),c.iou.toFixed(4)]){const td=document.createElement('td');td.textContent=text;tr.append(td);}table.append(tr);}
+ $('ranks').textContent='浅层首个合格框：'+(a.first_rank===null?'全部候选均不合格':'第 '+a.first_rank+' 名')+'；候选最佳 IoU='+a.best_iou.toFixed(4)+'。这些是使用 GT 的事后诊断，不是模型推理输入。';draw();}
+$('reveal').onclick=()=>{revealed=true;$('revealed').hidden=false;$('blind').hidden=true;draw();};
+$('prev').onclick=()=>{if(position>0){position--;render();}};$('next').onclick=()=>{if(position+1<filtered.length){position++;render();}};
+for(const id of ['arm','group','statusFilter'])$(id).addEventListener('change',applyFilter);$('search').addEventListener('input',applyFilter);
+for(const id of ['showGT','showTop','showDeep','zoom'])$(id).addEventListener('change',draw);
+$('notes').addEventListener('input',()=>save(false));$('mark').onclick=()=>save(true);$('unmark').onclick=()=>{const r=current();if(r&&labels[key(r)]){labels[key(r)].done=false;persist();progress();}};
+function download(name,text,type){const url=URL.createObjectURL(new Blob([text],{type})),a=document.createElement('a');a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),2000);}
+function exportPayload(){return{review_id:DATA.review_id,exported_at:new Date().toISOString(),identity:DATA.identity,labels};}
+$('exportJSON').onclick=()=>download('ref_manual_labels_'+new Date().toISOString().replace(/[:.]/g,'-')+'.json',JSON.stringify(exportPayload(),null,2),'application/json');
+$('exportCSV').onclick=()=>{const fields=['id','image_name','query','arm_under_review','group','done',...Object.keys(FIELDS),'notes'];function cell(v){let s=String(v??'');if(/^[=+\-@\t\r]/.test(s))s="'"+s;return '"'+s.replaceAll('"','""')+'"';}const lines=[fields];for(const r of DATA.rows)for(const a of ARMS){const v=labels[key(r,a)];if(v)lines.push([r.id,r.image_name,r.query,a,r.groups[a],v.done,...Object.keys(FIELDS).map(f=>v[f]),v.notes]);}download('ref_manual_labels.csv','\ufeff'+lines.map(r=>r.map(cell).join(',')).join('\r\n'),'text/csv;charset=utf-8');};
+$('importButton').onclick=()=>$('importFile').click();$('importFile').onchange=async e=>{const f=e.target.files[0];if(!f)return;try{const doc=JSON.parse(await f.text());if(doc.review_id!==DATA.review_id)throw Error('不是这份图册的标注文件');const imported=checkedLabels(doc.labels);for(const [k,v]of Object.entries(imported))if(labels[k]&&JSON.stringify(labels[k])!==JSON.stringify(v))throw Error('存在冲突标注：'+k+'。先备份，使用无冲突文件导入；不会覆盖当前标注。');labels={...labels,...imported};persist();applyFilter();}catch(error){warn('导入失败：'+error.message);}e.target.value='';};
+applyFilter();
+</script></body></html>
